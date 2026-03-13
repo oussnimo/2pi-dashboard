@@ -243,7 +243,7 @@ function AIQuestionGenerator({ isOpen, onClose, numLevels, quizData, onQuestions
 
   return (
     <motion.div
-      className="glass-card p-6 h-full flex flex-col"
+      className="glass-card p-6 h-full flex flex-col min-h-full"
       initial={{ scale: 0.95, opacity: 0 }}
       animate={{ scale: 1, opacity: 1 }}
       exit={{ scale: 0.95, opacity: 0 }}

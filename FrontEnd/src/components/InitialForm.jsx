@@ -153,7 +153,7 @@ function InitialForm({ onDataChange, onGoToPreview, onGoToLevelForm }) {
       >
         {/* ===== LEFT SIDE: INITIAL FORM ===== */}
         <motion.div
-          className={`glass-card p-8 transition-all duration-500 ${showAIGenerator ? "w-80 flex-shrink-0" : "flex-1"
+          className={`glass-card p-8 transition-all duration-500  ${showAIGenerator ? "w-[420px] flex-shrink-0" : "flex-1"
             }`}
           initial={{ scale: 0.95, opacity: 0, x: -20 }}
           animate={{ scale: 1, opacity: 1, x: 0 }}
@@ -239,7 +239,7 @@ function InitialForm({ onDataChange, onGoToPreview, onGoToLevelForm }) {
         {/* ===== RIGHT SIDE: AI GENERATOR PANEL ===== */}
         {showAIGenerator && (
           <motion.div
-            className="w-[560px] flex-shrink-0"
+            className="w-[420px] flex-shrink-0 "
             initial={{ scale: 0.95, opacity: 0, x: 20 }}
             animate={{ scale: 1, opacity: 1, x: 0 }}
             exit={{ scale: 0.95, opacity: 0, x: 20 }}

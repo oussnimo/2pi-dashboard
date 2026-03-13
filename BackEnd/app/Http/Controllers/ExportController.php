@@ -13,18 +13,27 @@ class ExportController extends Controller
             \Log::info('📦 [Export] Starting SCORM export');
 
             $validated = $request->validate([
-                'course' => 'required|string',
-                'topic' => 'required|string',
+                'course'     => 'required|string',
+                'topic'      => 'required|string',
                 'gameNumber' => 'required|integer',
-                'numLevels' => 'required|integer',
-                'levels' => 'required|array',
+                'numLevels'  => 'required|integer',
+                'levels'     => 'required|array',
             ]);
 
-            $quizData = $validated;
-            $scormTitle = "{$quizData['course']} - {$quizData['topic']}";
-            $timestamp = now()->format('Y-m-d_H-i-s');
+            $quizData    = $validated;
+            $scormTitle  = "{$quizData['course']} - {$quizData['topic']}";
+            $timestamp   = now()->format('Y-m-d_H-i-s');
             $zipFilename = "scorm_quiz_{$timestamp}.zip";
-            $zipPath = storage_path("app/temp/{$zipFilename}");
+            $zipPath     = storage_path("app/temp/{$zipFilename}");
+
+            $gamePath = storage_path("app/games/game_{$quizData['gameNumber']}");
+
+            if (!file_exists($gamePath)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => "Dossier du jeu introuvable : {$gamePath}"
+                ], 404);
+            }
 
             if (!file_exists(storage_path('app/temp'))) {
                 mkdir(storage_path('app/temp'), 0755, true);
@@ -32,134 +41,139 @@ class ExportController extends Controller
 
             $zip = new ZipArchive();
             if ($zip->open($zipPath, ZipArchive::CREATE) !== TRUE) {
-                return response()->json(['success' => false, 'message' => 'Cannot create ZIP'], 500);
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Cannot create ZIP'
+                ], 500);
             }
 
-            // Add imsmanifest.xml
             $zip->addFromString('imsmanifest.xml', $this->getManifest($scormTitle));
-            \Log::info('✅ manifest added');
+            $zip->addFromString('scorm.js', $this->getScormJs());
 
-            // Add index.html
-            $zip->addFromString('index.html', $this->getIndexHtml($scormTitle));
-            \Log::info('✅ index.html added');
+            $indexHtmlPath = "{$gamePath}/index.html";
+            if (!file_exists($indexHtmlPath)) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'index.html introuvable dans le dossier du jeu'
+                ], 404);
+            }
 
-            // Add CSS
-            $zip->addFromString('css/style.css', $this->getCss());
-            \Log::info('✅ css added');
+            $htmlContent = file_get_contents($indexHtmlPath);
+            if (strpos($htmlContent, 'scorm.js') === false) {
+                $htmlContent = str_replace(
+                    '<head>',
+                    '<head>' . "\n    " . '<script src="scorm.js"></script>',
+                    $htmlContent
+                );
+            }
+            $zip->addFromString('index.html', $htmlContent);
 
-            // Add JavaScript
-            $zip->addFromString('js/app.js', $this->getJs());
-            \Log::info('✅ js added');
+            $gameFiles = [
+                'index.js',
+                'index.wasm',
+                'index.pck',
+                'index.png',
+                'index.audio.worklet.js',
+                'index.apple-touch-icon.png',
+                'index.icon.png',
+            ];
 
-            // Add questions.json
-            $zip->addFromString('content/questions.json', json_encode([
-                'title' => $scormTitle,
+            foreach ($gameFiles as $filename) {
+                $filePath = "{$gamePath}/{$filename}";
+                if (file_exists($filePath)) {
+                    $zip->addFile($filePath, $filename);
+                } else {
+                    \Log::warning("Fichier Godot manquant : {$filename}");
+                }
+            }
+
+            $zip->addFromString('data/levels_data.json', json_encode([
+                'title'  => $scormTitle,
                 'levels' => $quizData['levels']
-            ], JSON_UNESCAPED_UNICODE));
-            \Log::info('✅ questions added');
-
-            // Add README
-            $zip->addFromString('README.txt', "SCORM Quiz\n\nTitle: {$scormTitle}\nLevels: {$quizData['numLevels']}\n");
-            \Log::info('✅ readme added');
+            ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
 
             $zip->close();
-            \Log::info("✅ [Export] SCORM package ready: {$zipFilename}");
 
-            return response()->download($zipPath, $zipFilename)->deleteFileAfterSend(true);
+            \Log::info("Export SCORM ready: {$zipFilename}");
+
+            return response()->download($zipPath, $zipFilename)
+                             ->deleteFileAfterSend(true);
 
         } catch (\Exception $e) {
             \Log::error('Export error: ' . $e->getMessage());
-            return response()->json(['success' => false, 'message' => $e->getMessage()], 500);
+            return response()->json([
+                'success' => false,
+                'message' => 'Failed to export quiz: ' . $e->getMessage()
+            ], 500);
         }
+    }
+
+    private function getScormJs()
+    {
+        $js  = 'function scorm_initialize() {' . "\n";
+        $js .= '    var api = window.API || window.parent.API;' . "\n";
+        $js .= '    if (api) { api.LMSInitialize(""); return true; }' . "\n";
+        $js .= '    return false;' . "\n";
+        $js .= '}' . "\n\n";
+        $js .= 'function scorm_set_score(score, min, max) {' . "\n";
+        $js .= '    var api = window.API || window.parent.API;' . "\n";
+        $js .= '    if (api) {' . "\n";
+        $js .= '        api.LMSSetValue("cmi.core.score.raw", score);' . "\n";
+        $js .= '        api.LMSSetValue("cmi.core.score.min", min);' . "\n";
+        $js .= '        api.LMSSetValue("cmi.core.score.max", max);' . "\n";
+        $js .= '        api.LMSCommit("");' . "\n";
+        $js .= '    }' . "\n";
+        $js .= '}' . "\n\n";
+        $js .= 'function scorm_set_completion(passed) {' . "\n";
+        $js .= '    var api = window.API || window.parent.API;' . "\n";
+        $js .= '    if (api) {' . "\n";
+        $js .= '        api.LMSSetValue("cmi.core.lesson_status", passed ? "passed" : "failed");' . "\n";
+        $js .= '        api.LMSCommit("");' . "\n";
+        $js .= '    }' . "\n";
+        $js .= '}' . "\n\n";
+        $js .= 'function scorm_finish() {' . "\n";
+        $js .= '    var api = window.API || window.parent.API;' . "\n";
+        $js .= '    if (api) { api.LMSFinish(""); }' . "\n";
+        $js .= '}' . "\n\n";
+        $js .= 'scorm_initialize();' . "\n";
+        return $js;
     }
 
     private function getManifest($title)
     {
-        $id = "quiz_" . md5($title);
-        return <<<XML
-<?xml version="1.0" encoding="UTF-8"?>
-<manifest identifier="{$id}" version="1.0" xmlns="http://www.imsproject.org/xsd/imscp_v1p1">
-    <metadata>
-        <schema>ADL SCORM</schema>
-        <schemaversion>1.2</schemaversion>
-    </metadata>
-    <organizations default="org1">
-        <organization identifier="org1">
-            <title>{$title}</title>
-            <item identifier="item1" identifierref="res1">
-                <title>{$title}</title>
-            </item>
-        </organization>
-    </organizations>
-    <resources>
-        <resource identifier="res1" type="webcontent">
-            <file href="index.html"/>
-        </resource>
-    </resources>
-</manifest>
-XML;
-    }
-
-    private function getIndexHtml($title)
-    {
-        return <<<HTML
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{$title}</title>
-    <link rel="stylesheet" href="css/style.css">
-</head>
-<body>
-    <div class="container">
-        <h1>{$title}</h1>
-        <div id="quiz">Loading quiz...</div>
-    </div>
-    <script src="js/app.js"></script>
-</body>
-</html>
-HTML;
-    }
-
-    private function getCss()
-    {
-        return <<<CSS
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px; }
-.container { max-width: 800px; margin: 0 auto; background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-h1 { color: #333; margin-bottom: 20px; }
-#quiz { margin: 20px 0; }
-.question { margin: 20px 0; padding: 15px; background: #f9f9f9; border-left: 4px solid #667eea; border-radius: 4px; }
-.answers { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
-button { padding: 10px 20px; background: #667eea; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
-button:hover { background: #5568d3; }
-input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; font-size: 14px; }
-CSS;
-    }
-
-    private function getJs()
-    {
-        return <<<JS
-let quizData = null;
-let currentLevel = 0;
-
-async function initQuiz() {
-    try {
-        const resp = await fetch('content/questions.json');
-        quizData = await resp.json();
-        renderQuiz();
-    } catch(e) {
-        document.getElementById('quiz').innerHTML = '<p>Error loading quiz: ' + e.message + '</p>';
-    }
-}
-
-function renderQuiz() {
-    if (!quizData || !quizData.levels) return;
-    document.getElementById('quiz').innerHTML = '<p>Quiz loaded with ' + quizData.levels.length + ' levels</p>';
-}
-
-document.addEventListener('DOMContentLoaded', initQuiz);
-JS;
+        $id = 'quiz_' . md5($title);
+        $xml  = '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+        $xml .= '<manifest identifier="' . $id . '" version="1.0"' . "\n";
+        $xml .= '    xmlns="http://www.imsproject.org/xsd/imscp_rootv1p1p2"' . "\n";
+        $xml .= '    xmlns:adlcp="http://www.adlnet.org/xsd/adlcp_rootv1p2"' . "\n";
+        $xml .= '    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">' . "\n";
+        $xml .= '    <metadata>' . "\n";
+        $xml .= '        <schema>ADL SCORM</schema>' . "\n";
+        $xml .= '        <schemaversion>1.2</schemaversion>' . "\n";
+        $xml .= '    </metadata>' . "\n";
+        $xml .= '    <organizations default="org1">' . "\n";
+        $xml .= '        <organization identifier="org1">' . "\n";
+        $xml .= '            <title>' . $title . '</title>' . "\n";
+        $xml .= '            <item identifier="item1" identifierref="resource1">' . "\n";
+        $xml .= '                <title>' . $title . '</title>' . "\n";
+        $xml .= '            </item>' . "\n";
+        $xml .= '        </organization>' . "\n";
+        $xml .= '    </organizations>' . "\n";
+        $xml .= '    <resources>' . "\n";
+        $xml .= '        <resource identifier="resource1"' . "\n";
+        $xml .= '            type="webcontent"' . "\n";
+        $xml .= '            adlcp:scormtype="sco"' . "\n";
+        $xml .= '            href="index.html">' . "\n";
+        $xml .= '            <file href="index.html"/>' . "\n";
+        $xml .= '            <file href="scorm.js"/>' . "\n";
+        $xml .= '            <file href="index.js"/>' . "\n";
+        $xml .= '            <file href="index.wasm"/>' . "\n";
+        $xml .= '            <file href="index.pck"/>' . "\n";
+        $xml .= '            <file href="index.png"/>' . "\n";
+        $xml .= '            <file href="data/levels_data.json"/>' . "\n";
+        $xml .= '        </resource>' . "\n";
+        $xml .= '    </resources>' . "\n";
+        $xml .= '</manifest>' . "\n";
+        return $xml;
     }
 }
